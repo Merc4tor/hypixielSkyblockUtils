@@ -1,18 +1,16 @@
+from copy import deepcopy
 import requests
 import json
-import jsons
 import base64
 import nbt
 from nbt.nbt import TAG_List, TAG_Compound, NBTFile
-
 import io
 import dill
 import os
 from concurrent.futures import ThreadPoolExecutor
 
-
-API_KEY = 'a866a415-43d6-4de5-b326-5e8528cb1fd2'
-OUTPUT_FILE_NAME = 'api_output.txt'
+API_KEY = 'PLEASE ENTER API KEY HERE: do "/api new" in hypixel to get one'
+OUTPUT_FILE_NAME = 'output.txt'
 craftable_item_blacklist = ['HEAT_CORE','TENTACLE_MEAT', 'MAGMA_CHUNK', 'GAZING_PEARL', 'COLOSSAL_EXP_BOTTLE_UPGRADE', 'BEZOS', 'SULPHURIC_COAL', 'HORN_OF_TAURUS']
 
 ignoredSortedItems = ['STICK']
@@ -163,21 +161,35 @@ empty_auction = {'uuid': '',
                  'item_uuid': ''}
 
 class sbItem():
-    def __init__(self, data, auctionHouseData_data=None) -> None:
+    def __init__(self, data=None, auctionHouseData_data=None, id=None) -> None:
         global recipeList
         #name
-        self.id = data['tag']['ExtraAttributes']['id']
-        self.name = data['tag']['display']['Name']
-        
-        self.count = data['Count']
+        if id != None:
+            self.id = id
+        else:
+            self.id = data['tag']['ExtraAttributes']['id']
+
+        try:
+            self.name = data['tag']['display']['Name']
+        except:
+            self.name = id_to_name(self.id)
+        try:
+            self.count = data['Count']
+        except:
+            self.count = 1
+
         try:
             self.rarityUpgrades = data['tag']['ExtraAttributes']['rarity_upgrades']
         except:
-            self.rarityUpgrades = None   
+            self.rarityUpgrades = 0   
+
+        self.hotPotatoCount = 0
+
         try:
-            self.hotPotatoCount = data['tag']['ExtraAttributes']['hot_potato_count']
+            self.hotPotatoCount = max(min(data['tag']['ExtraAttributes']['hot_potato_count'], 10), 0)
         except:
-            pass
+            self.hotPotatoCount = 0
+
         try:
             self.reforge = data['tag']['ExtraAttributes']['modifier']
         except:
@@ -212,9 +224,12 @@ class sbItem():
             self.recipe = recipeList[self.id]
         except:
             self.recipe = {}
+            
         self.raw_craft_cost = 0
         self.craft_cost = 0
         self.craft_cost_diff = 0
+        self.bid_diff = 0
+        self.bid_diff_proc = 0
         
         if (auctionHouseData_data != None):
             self.hasAuctionData = True
@@ -259,8 +274,6 @@ class sbItem():
         if self.reforge != None:
             if self.reforge in list(reforges):
                 if reforges[self.reforge] in auctionHouseData.items:
-                    print('reforge available')
-
                     reforgeValue = auctionHouseData.items[reforges[self.reforge]][0].starting_bid
                 if reforges[self.reforge] in list(bazaarData):
                     reforgeValue += bazaarData[reforges[self.reforge]]['buyPrice']
@@ -275,13 +288,17 @@ class sbItem():
 
         value = value + enchantmentValue
 
+        self.total_essence = 0
         try:
             upgradeCount = self.dungeonStars - 1
+            self.total_essence = 0
             while upgradeCount > 0:
                 upgradeCount = min(upgradeCount, 5)
                 currentEssenceTier = itemData[str(self.id)]['upgrade_costs'][upgradeCount][0]
+                self.total_essence += currentEssenceTier['amount']
                 starValue = starValue + essencePrice[currentEssenceTier['essence_type']] * currentEssenceTier['amount']
                 upgradeCount = upgradeCount - 1
+
         except:
             pass
                 
@@ -294,6 +311,7 @@ class sbItem():
             value = value + hotPotatoBookValue + fumingPotatoBookValue
         except:
             pass  
+        
         try:
             recombValue = bazaarData['RECOMBOBULATOR_3000']['buyPrice'] * self.rarityUpgrades
             value = value + recombValue
@@ -305,7 +323,10 @@ class sbItem():
         except:
             pass
         
-        value = value * self.count
+        try:
+            value = value * self.count
+        except:
+            pass
 
         value = value
         self.value = value
@@ -319,7 +340,22 @@ class sbItem():
     
         return self
     
-    def print_value(self, in_console=True, file_name=None):
+    def print_value(self,file_name=None, console=False, given_file=None ):
+        if given_file != None:
+            given_file.write('name                 : ' + str(self.count) + 'x ' + self.name + '\n')
+            given_file.write('item value           : ' + str(format_number(self.itemValue)) + '\n')
+            given_file.write('reforgeValue         : ' + str(format_number(self.reforgeValue)) + '\n')
+            given_file.write('enchantmentValue     : ' + str(format_number(self.enchantmentValue)) + '\n')
+            given_file.write('starValue            : ' + str(format_number(self.starValue)) + '\n')
+            given_file.write('hotPotatoBookValue   : ' + str(format_number(self.hotPotatoBookValue)) + '\n')
+            given_file.write('fumingPotatoBookValue: ' + str(format_number(self.fumingPotatoBookValue)) + '\n')
+            given_file.write('recombValue          : ' + str(format_number(self.recombValue)) + '\n')
+            given_file.write('craft cost           : ' + str(format_number(self.craft_cost)) + '\n')
+            given_file.write('craft cost diff      : ' + str(format_number(self.craft_cost_diff)) + '\n')
+            given_file.write('value                : ' +  str(format_number(self.value)) + '\n\n')
+            if self.hasAuctionData:
+                f.write('Auctioneer           : ' + self.auctioneer_uuid + '\n\n')
+
         if (file_name != None):                
             with open(file_name, 'a', encoding='utf-8') as f:
                 f.write('name                 : ' + str(self.count) + 'x ' + self.name + '\n')
@@ -332,11 +368,11 @@ class sbItem():
                 f.write('recombValue          : ' + str(format_number(self.recombValue)) + '\n')
                 f.write('craft cost           : ' + str(format_number(self.craft_cost)) + '\n')
                 f.write('craft cost diff      : ' + str(format_number(self.craft_cost_diff)) + '\n')
-                f.write('value                : ' +  str(self.value) + '\n\n')
+                f.write('value                : ' +  str(format_number(self.value)) + '\n\n')
                 if self.hasAuctionData:
                     f.write('Auctioneer           : ' + self.auctioneer_uuid + '\n\n')
 
-        if in_console:
+        if console:
             print('name: ' + str(self.count) + 'x ' + str(self.name))
             print('item value: ' + str(self.itemValue))
             print('reforgeValue: ' + str(self.reforgeValue))
@@ -353,14 +389,98 @@ class sbItem():
         
         for recipeItem in list(self.recipe):
             craftCost += calc_raw_value(recipeItem) * self.recipe[recipeItem]  
-        self.raw_craft_cost = craftCost
-        
         self.calc_value()
+        
+        self.raw_craft_cost = craftCost
+        self.craft_cost_diff = self.itemValue - self.craft_cost
+        
+        try:
+            self.craft_cost_diff_proc = self.itemValue / craftCost * 100 - 100
+        except:
+            self.craft_cost_diff_proc = -100
         self.craft_cost = self.value - self.itemValue + self.raw_craft_cost
         
-        self.craft_cost_diff = self.value - self.craft_cost
         
         return self
+    
+    def print_craft_cost_to_file(self, file):
+        global itemData
+        file.write('id                 : ' +  self.id + '\n')
+        file.write('name                 : ' + str(self.count) + 'x ' + self.name + '\n')
+        file.write('item value           : ' + str(format_number(self.itemValue)) + '\n')
+        file.write('raw craft cost       : ' + str(format_number(self.raw_craft_cost)) + '\n')
+        file.write('craft cost diff      : ' + str(format_number(self.craft_cost_diff)) + '\n')
+        file.write('craft cost diff proc : ' + str(format_number(self.craft_cost_diff_proc)) + '\n')
+        for i in self.recipe:
+            try:
+                f.write(f"{str(itemData[i]['name']):<25} {': '} {str(calc_raw_value(i)):<10}{' x ':>0} {str(self.recipe[i])} {'= ':>3} {calc_raw_value(i) * self.recipe[i]}" + '\n')
+            except:
+                f.write(f"{str(i):<25} {': '} {str(calc_raw_value(i)):<10}{' x ':>0} {str(self.recipe[i])} {'= ':>3} {calc_raw_value(i) * self.recipe[i]}" + '\n')
+        f.write('\n')
+    
+    def calc_auction_data(self):
+        self.calc_craft_cost()
+        
+        self.bid_diff = self.starting_bid - self.craft_cost
+        try:
+            self.bid_diff_proc = self.starting_bid / self.craft_cost * 100 - 100
+        except:
+            self.bid_diff_proc = -100        
+        
+        return self
+    
+    def print_auction_profit_to_file(self, file):
+        global itemData
+        global bazaarData
+        file.write('id                 : ' +  self.id + '\n')
+        file.write('name                 : ' + str(self.count) + 'x ' + self.name + '\n')
+        file.write('item value           : ' + str(format_number(self.itemValue)) + '\n')
+        file.write('craft cost       : ' + str(format_number(self.craft_cost)) + '\n')
+        file.write('craft cost diff      : ' + str(format_number(self.bid_diff)) + '\n')
+        file.write('craft cost diff proc : ' + str(format_number(self.bid_diff_proc)) + '\n')
+        file.write('recipe: ' + '\n')
+        for i in self.recipe:
+            try:
+                f.write(f"{'':<8}{str(itemData[i]['name']):>25} {': ':<10} {format_number(calc_raw_value(i))}{' x ':>0} {str(self.recipe[i])} {'= ':>3} {calc_raw_value(i) * self.recipe[i]}" + '\n')
+            except:
+                f.write(f"{'':<8}{str(i):>25}                   {': ':<10} {format_number(calc_raw_value(i))}{' x ':>0} {str(self.recipe[i])} {'= ':>3} {calc_raw_value(i) * self.recipe[i]}" + '\n')
+        file.write('other: ' + '\n')
+        
+        if self.rarityUpgrades != 0:
+            file.write(f"{'':<8}{'recombobulators':>25}         {': '} {str(self.rarityUpgrades)}{' x ':>0} {format_number(bazaarData['RECOMBOBULATOR_3000']['buyPrice'])}  {'= ':>3} {format_number(self.rarityUpgrades * bazaarData['RECOMBOBULATOR_3000']['buyPrice'])}" + '\n')
+    
+        if self.hotPotatoCount != 0:
+            file.write(f"{'':<8}{'Hot Potato Books':>25}        {': '} {str(max(min(self.hotPotatoCount, 5), 0))}         {' x ':>0} {format_number(bazaarData['HOT_POTATO_BOOK']['buyPrice'])}      {'= ':<3} {format_number((self.hotPotatoCount * bazaarData['HOT_POTATO_BOOK']['buyPrice']))}" + '\n')
+            if self.hotPotatoCount >= 5:
+                file.write(f"{'':<8}{'Fuming Hot Potato Books':>25} {': '} {str(max(min(self.hotPotatoCount - 10, 5), 0))}    {' x ':>0} {format_number(bazaarData['FUMING_POTATO_BOOK']['buyPrice'])}   {'= ':<3} {format_number(max(min(self.hotPotatoCount - 10, 5), 0) * bazaarData['FUMING_POTATO_BOOK']['buyPrice'])}" + '\n')
+
+        try:
+            file.write(f"{'':<8}{'Reforge':>25}                 {': '} {reforges[self.reforge]}         {' x ':>0} {format_number(bazaarData[reforges[self.reforge]]['buyPrice'])} {'= ':>3} {format_number(bazaarData[reforges[self.reforge]]['buyPrice'])}" + '\n')
+        except:
+            pass
+        
+        try:
+            currentEssenceTier = itemData[str(self.id)]['upgrade_costs'][self.dungeonStars - 1][0]
+            file.write(f"{'':<8}{'Essence ':>25}{': ':<10} {currentEssenceTier['essence_type']}  {str(self.total_essence):<10}{' x ':>0} {str(essencePrice[currentEssenceTier['essence_type']])} {'= ':>3} {essencePrice[currentEssenceTier['essence_type']] * self.total_essence:>13}" + '\n')
+        except:
+            pass
+        
+        file.write('Enchants: ' + '\n')
+
+
+        zerovalue_enchants = []
+        for enchantment in list(self.enchantments):
+            if calc_raw_value('ENCHANTMENT_'+ enchantment.upper() + '_' + str(self.enchantments[enchantment])) != 0:
+                file.write(f"{'':<8}{enchantment:>25} {': ':<10} {str(calc_raw_value('ENCHANTMENT_'+ enchantment.upper() + '_' + str(self.enchantments[enchantment])))}{' x ':>0} {str(1)} {'= ':>3} {calc_raw_value('ENCHANTMENT_'+ enchantment.upper() + '_' + str(self.enchantments[enchantment]))}" + '\n')
+                zerovalue_enchants.append(enchantment)
+
+        file.write('Other Enchants: ' + '\n')
+        file.write(f"{'':<8} {', '.join(zerovalue_enchants)}" + '\n')
+
+
+        f.write('\n')
+        
+        
 
 
 class auctionHouse():
@@ -370,13 +490,13 @@ class auctionHouse():
         self.itemList = []
         listOfPageNums = []
         
-        # for i in range(0, pages - 1):
-        #     listOfPageNums.append(i)
+        for i in range(0, pages - 1):
+            listOfPageNums.append(i)
             
-        # with ThreadPoolExecutor(max_workers=10) as pool:
-        #     response_list = list(pool.map(get_auctions,listOfPageNums))
+        with ThreadPoolExecutor(max_workers=10) as pool:
+            response_list = list(pool.map(get_auctions,listOfPageNums))
             
-        response_list = [get_auctions(0)]
+        # response_list = [get_auctions(0)]
         
         for pageIndex in range(0, len(response_list)):
             page = response_list[pageIndex]['auctions']
@@ -395,22 +515,41 @@ class auctionHouse():
                     except:
                         pass
                     
-                    currentauction_sbitem = sbItem(decode_inventory_data(currentauction['item_bytes'])[0], currentauction)
+                    item_data = decode_inventory_data(currentauction['item_bytes'])[0]
+                    if item_data != {}:
+                    
+                        currentauction_sbitem = sbItem(item_data, currentauction)
 
-                    self.itemList.append(currentauction_sbitem)
+                        self.itemList.append(currentauction_sbitem)
 
-                    if itemId in list(self.items):
-                        addedAuction = False
-                        j = 0
-                        while addedAuction == False:
-                            if self.items[itemId][j].starting_bid >= currentauction_sbitem.starting_bid:
-                                self.items[itemId].insert(j, currentauction_sbitem)
-                            j = j + 1
-                            addedAuction = True
-                    else:
-                        self.items[itemId] = [self.itemList[-1]]
+                        if itemId in list(self.items):
+                            addedAuction = False
+                            j = 0
+                            while addedAuction == False:
+                                if self.items[itemId][j].starting_bid >= currentauction_sbitem.starting_bid:
+                                    self.items[itemId].insert(j, currentauction_sbitem)
+                                j = j + 1
+                                addedAuction = True
+                        else:
+                            self.items[itemId] = [self.itemList[-1]]
 
             print("Indexing Auction House: " + str(pageIndex) + '/' + str(pages), end='\r')
+    
+    def recalculate_items(self):   
+        print('Recalculating value of ah items...', end='\n')
+
+        for item_index in range(0, len(self.itemList) - 1):
+            self.itemList[item_index].calc_auction_data()
+            # print("Recalculating Item Value: " + '{:>30}'.format(str(item_index + 1) + '/' + str(len(self.itemList))), end='\r')
+        # print('\r\r')
+        print_done()
+        return self
+    
+    def sort_item_list(self, item_key, reversed=True):
+        self.itemList.sort(key=lambda x: getattr(x, item_key), reverse=reversed)
+        return self
+    
+
 
 
             
@@ -434,7 +573,7 @@ def get_auctions(page=0):
         'page': page
     }).text
     data = json.loads(data)
-    print('recieved: ' +  str(page))
+    print('\x1b[2K' + 'recieved: ' +  str(page), end='\r')
     return data
 
 def get_bazaar():
@@ -459,7 +598,8 @@ def get_items_data():
 
     return data
 
-def get_player_data(playerName, profile_name):
+def get_player_data():
+    playerName = input('What is your Username?: ')
     uuid = json.loads(requests.get(url='https://api.mojang.com/users/profiles/minecraft/' + playerName).text)["id"]
     # data = requests.get(url='https://sky.shiiyu.moe/api/v2/profile/' + playerName).text
     data = requests.get(url='https://api.hypixel.net/skyblock/profiles', 
@@ -470,6 +610,29 @@ def get_player_data(playerName, profile_name):
     ).text
     data = json.loads(data)
 
+    selectOptions = [profile['cute_name'] for profile in data['profiles']]
+
+    hasSelected = False
+
+    while hasSelected == False:
+
+        for index in range(0, len(selectOptions)):
+            print('(' + str(index + 1) + ') ' + selectOptions[index])
+
+        profile_index = input('Please Select Profile: ')
+
+        if profile_index.isnumeric():
+            if int(profile_index) > 0 and int(profile_index) <= len(selectOptions):
+                print(f"You have selected {selectOptions[int(profile_index) - 1]}!")
+                profile_name = selectOptions[int(profile_index) - 1]
+
+                hasSelected = True
+            else:
+                print('Invalid Num')
+        else:
+            print('Invalid')
+            
+            
     for profile in data['profiles']:
         if profile['cute_name'].lower() == profile_name.lower():
 
@@ -495,11 +658,42 @@ def get_player_by_uuid(uuid):
     
     return data
 
+def get_collection_data():
+    rawdata = requests.get(url='https://api.hypixel.net/resources/skyblock/collections', params={'key':'6acc323c-d322-42c4-bcfb-928cbc1143e7'}).text 
+    data = json.loads(rawdata)
+    return data['collections']
 
+#collection data
+def collectionData_from_data(data):
+    collectionData = {}
+    unlocked = []
+    deleteStrings = ['Enchanted Book (',') Recipe',' Recipe']
+    for type in list(data.keys()):
+        for collection in data[type]['items']:
+            for tier in data[type]['items'][collection]['tiers']:
+                for unlockedItem in tier['unlocks']:
+                    # if 'Enchanted Book (' in unlockedItem:
+                    #     for string in deleteStrings:
+                    #         unlockedItem.replace(string, '')
+                            
+                    #     unlocked.append(name_to_id(unlockedItem))
+                    # else:
+                    for string in deleteStrings:
+                        unlockedItem = unlockedItem.replace(string, '')
 
+                    collectionData[name_to_id(unlockedItem)] = collection + '_' + str(tier['tier'])
 
+    return {'collectionData': collectionData, 'unlocked': unlocked}
+      
+def check_unlocked_recipe(x):
+    global playerData
+    global collectionData
+    
+    if (x.id in collectionData):
 
-
+        return collectionData[x.id] in playerData['unlocked_coll_tiers']
+    else: 
+        return False
 
 #item data
 def load_item_neu_data_to_file():
@@ -624,7 +818,42 @@ def neuData_to_recipe_list(neuData):
                             recipeList[item][craftSpotItem] = craftSpotNumber
     return recipeList
 
+def name_to_id(name):
+    global itemData
+    for item_key in list(itemData.keys()):
+        if itemData[item_key]['name'] == name:
+            return item_key
+        
+    return 'NAME_NOT_FOUND'
 
+def id_to_name(id):
+    global itemData
+    
+    try:
+        return itemData[id]['name']
+    except:
+        return 'NAME_NOT_FOUND'
+    
+def check_item_requirements(item, minimumValue, maximumValue, onlyBazaar):
+    global bazaarData
+    if item.raw_craft_cost >= minimumValue:
+        if item.raw_craft_cost <= maximumValue:
+            if onlyBazaar:
+                recipeItemInBazaarList = []
+                for recipeItem in list(item.recipe):
+                    if recipeItem in bazaarData + ignoredSortedItems:
+                        recipeItemInBazaarList.append(True)
+                    else:
+                        recipeItemInBazaarList.append(False)
+                if all(recipeItemInBazaarList):
+                    return True
+            else:
+                return True
+        else:
+            return False
+    else:
+        return False
+    
 #prints
 def print_done():
     print('\033[92m' + 'done' + '\033[0m')
@@ -633,58 +862,285 @@ def reprint_input_output(input_question, returned_value):
     print('\033[F\033[K'  + input_question + '\033[96m' + str(returned_value) + '\033[0m')
     
 def format_number(number):
-    return '{:>30}'.format('{:,}'.format(round(number)).replace(',', ' '))
+    return '{:>15}'.format('{:,}'.format(round(number)).replace(',', ' '))
+
+
+#create data
+def create_itemData():
+    print('get item data...', end="")
+    itemData = get_items_data()
+    print_done()
+    return itemData
+
+def create_neuData():
+    print('getting bazaar Data...', end='')
+    neuData = json.load(open('itemData.txt', 'r'))
+    print_done()
+    return neuData
+
+def create_bazaarData():
+    print('getting bazaar Data...', end='')
+    bazaarData = get_bazaar()
+    print_done()
+    return bazaarData
+
+def create_recipeList():
+    global neuData
+    print('creating recipe list...', end='')
+    recipeList = neuData_to_recipe_list(neuData)
+    print_done()
+    return recipeList
+
+def create_auctionHouse():
+    if (input('Request Auction (Y)es or (N)o: ').lower() == "y"):
+        auctionHouseData = auctionHouse()
+        dill.dump(auctionHouseData, file=open('auctions.txt', 'wb'))
+    print('getting auction Data...', end='')
+    auctionHouseData = dill.load(open('auctions.txt', 'rb'))
+    print_done()
+    return auctionHouseData
+
+def create_collectionData():
+        print('Getting collection data... ', end='')
+        collectionData = collectionData_from_data(get_collection_data())
+
+        unlockedCollectionItems = collectionData['unlocked']
+        collectionData = collectionData['collectionData']
+        print_done()
+        return collectionData, unlockedCollectionItems, collectionData
+        
+    
+
+selectName = 'What do you want to do?'
+#, 'Auction Craft Value'
+selectOptions = ['Calculate Networth', 'Craft Profit', 'Auction Items Value']
+
+hasSelected = False
+
+while hasSelected == False:
+
+    for index in range(0, len(selectOptions)):
+        print('(' + str(index + 1) + ') ' + selectOptions[index])
+
+    selectAns = input('Please Select: ')
+
+    if selectAns.isnumeric():
+        if int(selectAns) > 0 and int(selectAns) <= len(selectOptions):
+            print(f"You have selected {selectOptions[int(selectAns) - 1]}!")
+            hasSelected = True
+        else:
+            print('Invalid Num')
+    else:
+        print('Invalid')
 
 
 
+match int(selectAns) - 1:
+    case 0: #'Calculate Networth'
+        playerData = get_player_data()
+        itemData = create_itemData()
+        bazaarData = create_bazaarData()
+        
+        auctionHouseData = create_auctionHouse()    
+        auctionHouseData.recalculate_items()
+        
+        playerItems = []
+        with open('output.txt', 'w', encoding='utf-8') as f:
+            armorValue = 0
+            #f.write('Armor: \n')
+            for armor in decode_inventory_data(playerData['inv_armor']['data']):
+                try:
+                    playerItems.append(sbItem(armor).calc_value())
+                    armorValue = armorValue + round(playerItems[-1].value)
+            #f.write('Total Armor Value: ' + str(armorValue) + '\n')
+                except: 
+                    pass
+            invValue = 0
+            #f.write('Inventory: \n')
+            for inv_item in decode_inventory_data(playerData['inv_contents']['data']):
+                try:
+                    playerItems.append(sbItem(inv_item).calc_value())
+                    invValue = invValue + round(playerItems[-1].value)
+                except: 
+                    pass
+                #f.write('Total Inventory Value: ' + str(invValue) + '\n')
+
+            echestValue = 0
+            #f.write('Ender Chest: \n')
+            for item in decode_inventory_data(playerData['ender_chest_contents']['data']):
+                try:
+                    playerItems.append(sbItem(item).calc_value())
+                    echestValue = echestValue + round(playerItems[-1].value)
+                except: 
+                    pass
+            #f.write('Total Ender Chest Value: ' + str(echestValue) + '\n')
+
+            wardrobeValue = 0
+            #f.write('Wardrobe: \n')
+            for item in decode_inventory_data(playerData['wardrobe_contents']['data']):
+                try:
+                    playerItems.append(sbItem(item).calc_value())
+                    wardrobeValue = wardrobeValue + round(playerItems[-1].value)
+            #f.write('Total Wardrobe Value: ' + str(wardrobeValue) + '\n')
+                except: 
+                    pass
+            talismanValue = 0
+            #f.write('Talismans: \n')
+            for item in decode_inventory_data(playerData['talisman_bag']['data']):
+                try:
+                    playerItems.append(sbItem(item).calc_value())
+                    talismanValue = talismanValue + round(playerItems[-1].value)
+            #f.write('Total Talismans Value: ' + str(talismanValue) + '\n')
+                except: 
+                    pass
+            backpackValue = 0
+            #f.write('Backpacks: \n')
+            for page in playerData['backpack_contents']:
+                for item in decode_inventory_data(playerData['backpack_contents'][page]['data']):
+                    try:
+                        playerItems.append(sbItem(item).calc_value())
+                        backpackValue = backpackValue + round(playerItems[-1].value)
+            #f.write('Total Backpacks Value: ' + str(backpackValue) + '\n')
+                    except: 
+                        pass
+                
+            f.write('Total Armor Value      : ' + format_number(armorValue) + '\n')
+            f.write('Total Inventory Value  : ' + format_number(invValue) + '\n')
+            f.write('Total Ender Chest Value: ' + format_number(echestValue) + '\n')
+            f.write('Total Wardrobe Value   : ' + format_number(wardrobeValue) + '\n')
+            f.write('Total Talismans Value  : ' + format_number(talismanValue) + '\n')
+            f.write('Total Backpacks Value  : ' + format_number(backpackValue) + '\n')
+            f.write('Total Value            : ' + format_number(armorValue + invValue + echestValue + wardrobeValue + talismanValue + backpackValue) + '\n')
+
+            print('Total Armor Value: ' + str(armorValue) + '\n')
+            print('Total Inventory Value: ' + str(invValue) + '\n')
+            print('Total Ender Chest Value: ' + str(echestValue) + '\n')
+            print('Total Wardrobe Value: ' + str(wardrobeValue) + '\n')
+            print('Total Talismans Value: ' + str(talismanValue) + '\n')
+            print('Total Backpacks Value: ' + str(backpackValue) + '\n')
+
+            playerItems.sort(key=lambda x: x.value, reverse=True)
+            
+            f.write('\n')
+        
+            [instance.print_value(given_file=f, console=False) for instance in playerItems]
+
+    case 1: # 'Craft Profit'
+        # playerData = get_player_data(input('What is your Username?: '), input('What is your profile Name?: '))
+        playerData = get_player_data(USERNAME, PROFILE)
+
+        itemData = create_itemData()
+
+        neuData = create_neuData()
+        
+        collectionData, unlockedCollectionItems, collectionData = create_collectionData()
+        
+        bazaarData = create_bazaarData()
+        
+        auctionHouseData = create_auctionHouse()
+        auctionHouseData.recalculate_items()
+
+        recipeList = create_recipeList()
+        
+        craftCost = {}
+        for item_id in list(recipeList):
+            craftCost[item_id] = sbItem(id=item_id).calc_craft_cost()
+        
+        minimumValue = int(input('minimum value (default 50k): ') or 50000)
+        reprint_input_output('minimum value (default 50k): ', minimumValue)
+
+        maximumValue = int(input('maximum value (default 50m): ') or 50000000)
+        reprint_input_output('maximum value (default 50m): ', maximumValue)
+
+        sortMethod = input('difference, proc diff (default), craft, original: ') or 'proc diff'
+        reprint_input_output('difference, diffProc (default), craft, original: ', sortMethod)
+        match sortMethod:
+            case 'difference':
+                sortMethod = 'craft_cost_diff'
+            case 'proc diff':
+                sortMethod = 'craft_cost_diff_proc'
+            case 'craft':
+                sortMethod = 'raw_craft_cost'
+            case 'original':
+                sortMethod = 'itemValue'
+
+        onlyBazaar = bool(input('use bazaar 1 or 0 (default 0): ').lower() in ['true', '1', 't', 'y', 'yes', 'yeah']) or False
+        reprint_input_output('use bazaar 1 or 0 (default 0): ', onlyBazaar)
+
+        craftCostInOrderArray = sorted(list(craftCost.values()), key=lambda x: getattr(x, sortMethod), reverse=True)
+        
+        showCraftables = input('do you want to only show craftable (Y)es: ').lower() == 'y' or False 
+        reprint_input_output('do you want to only show craftable (Y)es: ', showCraftables)
+
+        if (showCraftables):
+            craftCostInOrderArray = list(filter(check_unlocked_recipe, craftCostInOrderArray))
+
+        craftCostInOrderArray = list(filter(lambda x: check_item_requirements(x, minimumValue, maximumValue, onlyBazaar), craftCostInOrderArray))
 
 
+        print('Printing output to output_items.txt ...', end='')
+        with open('output.txt', 'w', encoding='utf-8') as f:
+            [item.print_craft_cost_to_file(f) for item in craftCostInOrderArray]
+        print_done()
 
+    case 2: #'Auction Items Value'
+        playerData = get_player_data()
 
-print('get item data...', end="")
-itemData = get_items_data()
-print_done()
+        itemData = create_itemData()
 
-print('getting bazaar Data...', end='')
-bazaarData = get_bazaar()
-neuData = json.load(open('itemData.txt', 'r'))
-print_done()
+        neuData = create_neuData()
+        
+        collectionData, unlockedCollectionItems, collectionData = create_collectionData()
+        
+        bazaarData = create_bazaarData()
+        
+        recipeList = create_recipeList()
+        
+        auctionHouseData = create_auctionHouse()
+        auctionHouseData.recalculate_items()
 
-print('creating recipe list...', end='')
-recipeList = neuData_to_recipe_list(neuData)
-print_done()
+        
+        minimumValue = int(input('minimum value (default 50k): ') or 50000)
+        reprint_input_output('minimum value (default 50k): ', minimumValue)
 
-if (input('Request Auction (Y)es or (N)o: ').lower() == "y"):
-    auctionHouseData = auctionHouse()
-    dill.dump(auctionHouseData, file=open('auctions.txt', 'wb'))
-print('getting auction Data...', end='')
-auctionHouseData = dill.load(open('auctions.txt', 'rb'))
-print_done()
+        maximumValue = int(input('maximum value (default 50m): ') or 50000000)
+        reprint_input_output('maximum value (default 50m): ', maximumValue)
 
-print('creating recipe list...', end='')
-recipeList = neuData_to_recipe_list(neuData)
-print_done()
+        sortMethod = input('difference, proc diff (default), craft, bin: ') or 'proc diff'
+        reprint_input_output('difference, diffProc (default), craft, bin: ', sortMethod)
+        
+        auctionItemList = list(deepcopy(auctionHouseData.itemList))
+        
+        match sortMethod:
+            case 'difference':
+                sortMethod = 'bid_diff'
+            case 'proc diff':
+                sortMethod = 'bid_diff_proc'
+            case 'craft':
+                sortMethod = 'craft_cost'
+            case 'bin':
+                sortMethod = 'starting_bid'
+        
 
-print('calculate crafcost for all items...', end='')
-craftCost = calc_item_craft_profit(recipeList)
-print_done()
+        onlyBazaar = bool(input('use bazaar 1 or 0 (default 0): ').lower() in ['true', '1', 't', 'y', 'yes', 'yeah']) or False
+        reprint_input_output('use bazaar 1 or 0 (default 0): ', onlyBazaar)
+        
+        auctionItemList.sort(key=lambda x: getattr(x, sortMethod), reverse=True)
 
+        showCraftables = input('do you want to only show craftable (Y)es: ').lower() == 'y' or False 
+        reprint_input_output('do you want to only show craftable (Y)es: ', showCraftables)
 
-print('Recalculating value of ah items...', end='')
-for item in auctionHouseData.itemList:
-    item.calc_value()
-print_done()
+        if (showCraftables):
+            auctionItemList = list(filter(check_unlocked_recipe, auctionItemList))
+        print('filtering items ...', end='')
+        auctionItemList = list(filter(lambda x: check_item_requirements(x, minimumValue, maximumValue, onlyBazaar), auctionItemList))
+        print_done()
 
-get_player_by_uuid('9412256a372f4cf8ac2a495c981f1c67')
+        print('Printing output to output.txt ...', end='')
+        with open('output.txt', 'w', encoding='utf-8') as f:
+            [item.print_auction_profit_to_file(f) for item in auctionItemList]
+        print_done()
+    # case 4: #'Auction Craft Value'
+        
 
-with open(OUTPUT_FILE_NAME, 'w', encoding='utf-8') as f:
-    f.write('')
-
-for itemIndex in range(0, len(auctionHouseData.itemList) - 1):
-    auctionHouseData.itemList[itemIndex].calc_value().calc_craft_cost()
-
-auctionHouseData.itemList.sort(key=lambda x: x.craft_cost_diff, reverse=True)
-
-for itemIndex in range(0, len(auctionHouseData.itemList) - 1):
-    auctionHouseData.itemList[itemIndex].print_value(in_console=False, file_name=OUTPUT_FILE_NAME)
-    print('item: ' + str(itemIndex) + '/' + str(len(auctionHouseData.itemList)), end='\r')
+input("Press enter to exit ;)")
